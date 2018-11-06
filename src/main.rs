@@ -486,11 +486,18 @@ fn sync(workspaces: &[Workspace],
     Ok(VendorConfig { source: config })
 }
 
+#[cfg(unix)]
+fn cp_symlink(target: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(&target, &dst)
+}
+
 fn cp_sources(src: &Path,
               paths: &Vec<PathBuf>,
               dst: &Path,
               cksums: &mut BTreeMap<String, String>) -> CargoResult<()> {
     for p in paths {
+        println!("cp source {}", p.display());
+
         let relative = p.strip_prefix(&src).unwrap();
 
         match relative.to_str() {
@@ -526,10 +533,26 @@ fn cp_sources(src: &Path,
 
         fs::create_dir_all(dst.parent().unwrap())?;
 
-        fs::copy(&p, &dst).chain_err(|| {
-            format!("failed to copy `{}` to `{}`", p.display(), dst.display())
-        })?;
-        cksums.insert(relative.to_str().unwrap().replace("\\", "/"), sha256(&dst)?);
+        let symlink = fs::symlink_metadata(p).ok().and_then(|m| {
+            if m.file_type().is_symlink() {
+                Some(fs::read_link(p).unwrap())
+            } else {
+                None
+            }
+        });
+
+        match symlink {
+            Some(symlink) => {
+                cp_symlink(&symlink, &dst)?;
+            },
+            None => {
+                fs::copy(&p, &dst).chain_err(|| {
+                    format!("failed to copy `{}` to `{}`", p.display(), dst.display())
+                })?;
+
+                cksums.insert(relative.to_str().unwrap().replace("\\", "/"), sha256(&dst)?);
+            },
+        }
     }
     Ok(())
 }
